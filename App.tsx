@@ -34,6 +34,9 @@ const App: React.FC = () => {
     }
   };
 
+  // Check if we reached the max number of active shooters
+  const isMaxCapacity = shooters.length >= 4;
+
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-between py-4 px-2 md:py-8 font-sans select-none">
       
@@ -212,9 +215,14 @@ const App: React.FC = () => {
               <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
                 <PackagePlus className="w-4 h-4" /> REINFORCEMENTS
               </h3>
-              <span className="text-xs text-slate-500 bg-slate-900 px-2 py-1 rounded-md">
-                Queue System Active
-              </span>
+              <div className="flex gap-2">
+                <span className={`text-xs px-2 py-1 rounded-md transition-colors ${isMaxCapacity ? 'bg-red-900/50 text-red-300 border border-red-800' : 'bg-slate-900 text-slate-500'}`}>
+                  Active: {shooters.length}/4
+                </span>
+                <span className="text-xs text-slate-500 bg-slate-900 px-2 py-1 rounded-md">
+                  Queue Active
+                </span>
+              </div>
             </div>
             
             <div className="grid grid-cols-4 gap-3">
@@ -236,8 +244,9 @@ const App: React.FC = () => {
                                   <InventoryItem 
                                       key={pig.id} 
                                       pig={pig} 
-                                      onClick={() => isTop ? spawnShooter(laneIndex) : null}
+                                      onClick={() => (isTop && !isMaxCapacity) ? spawnShooter(laneIndex) : null}
                                       isTop={isTop}
+                                      disabled={!isTop || isMaxCapacity}
                                       index={index}
                                   />
                               );
@@ -265,7 +274,8 @@ const InventoryItem: React.FC<{
     onClick: () => void; 
     isTop: boolean;
     index: number;
-}> = ({ pig, onClick, isTop, index }) => {
+    disabled?: boolean;
+}> = ({ pig, onClick, isTop, index, disabled }) => {
     const colorClasses = {
       [ColorID.Red]: 'bg-red-500 border-red-700',
       [ColorID.Green]: 'bg-green-500 border-green-700',
@@ -280,15 +290,21 @@ const InventoryItem: React.FC<{
     const opacity = index === 0 ? 'opacity-100' : index === 1 ? 'opacity-60' : 'opacity-30';
     const scale = index === 0 ? 'scale-100' : index === 1 ? 'scale-95' : 'scale-90';
     
+    // If disabled, dim it further and remove pointer cursor
+    const interactiveClasses = (!disabled) 
+        ? 'cursor-pointer hover:brightness-110 active:border-b-0 active:translate-y-1' 
+        : 'cursor-not-allowed opacity-50 grayscale-[0.3]';
+
     return (
       <button 
         onClick={onClick}
-        disabled={!isTop}
+        disabled={disabled}
         className={`
           group relative w-full h-14 md:h-16 rounded-xl border-b-4 
           ${colorClasses} 
           ${opacity} ${scale}
-          ${isTop ? 'cursor-pointer hover:brightness-110 active:border-b-0 active:translate-y-1' : 'cursor-default border-b-2'}
+          ${interactiveClasses}
+          ${!isTop && !disabled ? 'cursor-default border-b-2' : ''}
           transition-all duration-300
           flex items-center justify-center
           shadow-lg

@@ -169,6 +169,11 @@ export const useGameLoop = () => {
 
   // Spawn from a specific lane
   const handleSpawn = (laneIndex: number) => {
+      // Limit to max 4 active shooters on the rail
+      if (stateRef.current.shooters.length >= 4) {
+          return;
+      }
+
       const lane = stateRef.current.inventoryLanes[laneIndex];
       if (lane && lane.length > 0) {
           const s = lane[0];
@@ -178,7 +183,10 @@ export const useGameLoop = () => {
           stateRef.current.shooters.push({ 
               ...s, 
               state: 'moving', 
-              railPosition: 0
+              // Start at Bottom-Left corner.
+              // Top: 0->W, Right: W->2W, Bottom: 2W->3W, Left: 3W->4W
+              // 3 * GRID_SIZE is the start of the Left side (Bottom-Left corner)
+              railPosition: GRID_SIZE * 3 
           });
 
           setInventoryLanes([...stateRef.current.inventoryLanes]);

@@ -1,4 +1,4 @@
-import { ColorID, GRID_SIZE, Pixel } from '../types';
+import { ColorID, GRID_SIZE, Pixel, Shooter } from '../types';
 
 /**
  * Generates a pixel art level pattern (e.g., a potion bottle shape)
@@ -60,7 +60,6 @@ export const generateLevel = (): Pixel[][] => {
 
 /**
  * Raycast Logic: Finds the first active pixel from a specific angle
- * This replaces physics raycasts.
  */
 export const findTargetPixel = (
   grid: Pixel[][], 
@@ -74,7 +73,7 @@ export const findTargetPixel = (
 
   if (side === 'top') {
     // Scan from Row 0 downwards
-    for (let r = 0; r <= center + 1; r++) { // +1 to allow hitting slightly past center if needed
+    for (let r = 0; r <= center + 1; r++) { 
       const pixel = grid[r][index];
       if (pixel.active) return pixel;
     }
@@ -103,7 +102,6 @@ export const findTargetPixel = (
 
 /**
  * Converts linear rail progress (0-totalPerimeter) to 2D coordinates and Grid facing info.
- * The Rail is a rectangle around the grid.
  */
 export const calculateRailState = (
   progress: number, 
@@ -111,19 +109,12 @@ export const calculateRailState = (
   width: number, 
   height: number
 ) => {
-  // Normalize progress
   const p = progress % totalPerimeter;
   
-  // Dimensions of the rail path
-  // Top: 0 -> width
-  // Right: width -> width + height
-  // Bottom: width + height -> 2*width + height
-  // Left: 2*width + height -> 2*width + 2*height
-
   let x = 0;
   let y = 0;
   let side: 'top' | 'right' | 'bottom' | 'left' = 'top';
-  let gridIndex = 0; // Which row or column does this align with?
+  let gridIndex = 0; 
 
   if (p < width) {
     // TOP SIDE
@@ -152,4 +143,114 @@ export const calculateRailState = (
   }
 
   return { x, y, side, gridIndex };
+};
+
+/**
+ * Helper to deep clone the grid for simulation
+ */
+const cloneGrid = (grid: Pixel[][]): Pixel[][] => {
+    return grid.map(row => row.map(p => ({ ...p })));
+};
+
+/**
+ * SIMULATION PEELING ALGORITHM
+ * Calculates the exact sequence of pigs needed to clear the level by simulating
+ * a perfect game where the outer layers are peeled off one by one.
+ */
+export const getSolution = (grid: Pixel[][]): Shooter[] => {
+    const simGrid = cloneGrid(grid);
+    const solution: Shooter[] = [];
+    let loopGuard = 0;
+    let pigIdCounter = 0;
+
+    // We loop until no active pixels remain or safety break
+    while (loopGuard < 200) {
+        loopGuard++;
+        
+        // 1. Scan Perimeter
+        // We act as if shooters are everywhere on the rail.
+        // We scan all 4 sides to find "First Visible" pixels.
+        
+        const exposedPixels: Pixel[] = [];
+        
+        // Scan Top (Cols 0 to Size-1)
+        for(let c=0; c<GRID_SIZE; c++) {
+            const p = findTargetPixel(simGrid, 'top', c);
+            if(p) exposedPixels.push(p);
+        }
+        // Scan Right (Rows 0 to Size-1)
+        for(let r=0; r<GRID_SIZE; r++) {
+            const p = findTargetPixel(simGrid, 'right', r);
+            if(p) exposedPixels.push(p);
+        }
+        // Scan Bottom (Cols 0 to Size-1)
+        for(let c=0; c<GRID_SIZE; c++) {
+            const p = findTargetPixel(simGrid, 'bottom', c);
+            if(p) exposedPixels.push(p);
+        }
+        // Scan Left (Rows 0 to Size-1)
+        for(let r=0; r<GRID_SIZE; r++) {
+            const p = findTargetPixel(simGrid, 'left', r);
+            if(p) exposedPixels.push(p);
+        }
+
+        // Check completion
+        const hasActive = simGrid.some(row => row.some(p => p.active));
+        if (exposedPixels.length === 0) {
+            if (hasActive) {
+                // Technically impossible in a convex-ish shape, but break to avoid freeze
+                console.warn("Algorithm stuck: Active pixels exist but none exposed.");
+                break;
+            } else {
+                // Victory Condition met in simulation
+                break;
+            }
+        }
+
+        // 2. Decision Strategy (Option A)
+        // Count colors of the currently exposed layer
+        // We use a Map to ensure unique pixels (a corner pixel might be seen from top and right)
+        const uniqueExposed = new Map<string, Pixel>();
+        exposedPixels.forEach(p => uniqueExposed.set(p.id, p));
+
+        const colorCounts: Record<string, number> = {};
+        uniqueExposed.forEach(p => {
+            colorCounts[p.color] = (colorCounts[p.color] || 0) + 1;
+        });
+
+        // 3. Select Max Color
+        let bestColor = ColorID.None;
+        let maxCount = -1;
+
+        for (const [color, count] of Object.entries(colorCounts)) {
+             if (count > maxCount) {
+                 maxCount = count;
+                 bestColor = color as ColorID;
+             }
+        }
+
+        if (bestColor === ColorID.None) break;
+
+        // 4. Generate Pig
+        // No ammo redundancy as requested.
+        solution.push({
+            id: `pig-${pigIdCounter++}`,
+            color: bestColor,
+            ammo: maxCount,
+            maxAmmo: maxCount,
+            railPosition: 0,
+            state: 'inventory'
+        });
+
+        // 5. Simulate Elimination
+        // Only remove the exposed pixels of the CHOSEN color.
+        // This reveals the layer behind them for the next loop.
+        uniqueExposed.forEach(p => {
+            if (p.color === bestColor) {
+                simGrid[p.row][p.col].active = false;
+            }
+        });
+    }
+
+    return solution;
 };

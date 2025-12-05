@@ -1,66 +1,83 @@
-
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Pixel, Shooter, ColorID, GameState, GRID_SIZE, RAIL_SPEED, FIRE_RATE } from '../types';
-import { generateLevel, findTargetPixel, calculateRailState } from '../utils/gridHelpers';
+import { Pixel, Shooter, GameState, GRID_SIZE, RAIL_SPEED, ColorID } from '../types';
+import { generateLevel, findTargetPixel, calculateRailState, getSolution } from '../utils/gridHelpers';
 
 export const useGameLoop = () => {
   const [grid, setGrid] = useState<Pixel[][]>([]);
   const [shooters, setShooters] = useState<Shooter[]>([]);
-  const [inventory, setInventory] = useState<Shooter[]>([]);
+  // Inventory is now 4 lanes (columns) of shooters
+  const [inventoryLanes, setInventoryLanes] = useState<Shooter[][]>([], [], [], []);
   const [gameState, setGameState] = useState<GameState>(GameState.Playing);
   const [score, setScore] = useState(0);
   
   const lastTimeRef = useRef<number>(0);
   const requestRef = useRef<number>();
   
-  // Initialize Level
-  useEffect(() => {
-    const initialGrid = generateLevel();
-    setGrid(initialGrid);
-
-    // Initial Inventory
-    // Fixed: Colors now match the colors generated in the grid (Red, Green, Yellow, Orange, Purple, White)
-    const validColors = [ColorID.Red, ColorID.Green, ColorID.Yellow, ColorID.Orange, ColorID.Purple, ColorID.White];
-    
-    const initialInventory: Shooter[] = Array.from({ length: 8 }).map((_, i) => ({
-      id: `inv-${i}`,
-      color: validColors[Math.floor(Math.random() * validColors.length)],
-      ammo: 15,
-      maxAmmo: 15,
-      railPosition: 0,
-      state: 'inventory',
-      lastFired: 0
-    }));
-    setInventory(initialInventory);
-  }, []);
-
-  const spawnShooter = useCallback((shooterId: string) => {
-    // We handle this via the ref in gameTick for synchronization, but we trigger the state change here
-    // effectively by updating the ref and forcing a re-render is handled by the loop.
-    // However, to be safe with React event handling:
-  }, []);
-
-  // We need a specific "Tick" function that has access to both Grid and Shooters
-  // We'll use a `useRef` to hold the game state and a `useState` to force renders.
-  
   const stateRef = useRef({
       grid: [] as Pixel[][],
       shooters: [] as Shooter[],
-      inventory: [] as Shooter[],
+      inventoryLanes: [] as Shooter[][], // Ref copy for game loop access
       score: 0,
       perimeter: GRID_SIZE * 4
   });
 
-  // Sync ref with initial state
-  useEffect(() => {
-      if (grid.length > 0 && stateRef.current.grid.length === 0) {
-          stateRef.current.grid = grid;
-          stateRef.current.inventory = inventory;
+  // Helper to init a blank grid
+  const createBlankGrid = () => {
+      const g: Pixel[][] = [];
+      for(let r=0; r<GRID_SIZE; r++){
+          const row: Pixel[] = [];
+          for(let c=0; c<GRID_SIZE; c++){
+              row.push({
+                  id: `p-${r}-${c}`,
+                  color: ColorID.None,
+                  active: false,
+                  row: r,
+                  col: c
+              });
+          }
+          g.push(row);
       }
-  }, [grid, inventory]);
+      return g;
+  };
+
+  // Logic to start/restart a level
+  const startNewLevel = useCallback(() => {
+    const initialGrid = generateLevel();
+    setGrid(initialGrid);
+
+    // Run the Simulation Peeling algorithm to get the perfect sequence
+    const solution = getSolution(initialGrid);
+    
+    // Distribute solution into 4 lanes (Round Robin)
+    const lanes: Shooter[][] = [[], [], [], []];
+    solution.forEach((shooter, index) => {
+        lanes[index % 4].push(shooter);
+    });
+
+    setInventoryLanes(lanes);
+    setShooters([]);
+    setScore(0);
+    setGameState(GameState.Playing);
+
+    // Synchronize Ref immediately to prevent loop race conditions
+    stateRef.current.grid = initialGrid;
+    stateRef.current.inventoryLanes = lanes;
+    stateRef.current.shooters = [];
+    stateRef.current.score = 0;
+  }, []);
+
+  // Initialize Level on Mount
+  useEffect(() => {
+    startNewLevel();
+  }, [startNewLevel]);
+
+  // Sync ref with state (for updates that happen outside startNewLevel)
+  useEffect(() => {
+      stateRef.current.grid = grid;
+      stateRef.current.inventoryLanes = inventoryLanes;
+  }, [grid, inventoryLanes]);
 
   const gameTick = useCallback((time: number) => {
-      // Initialize lastTimeRef correctly on first frame
       if (lastTimeRef.current === 0) {
           lastTimeRef.current = time;
           requestRef.current = requestAnimationFrame(gameTick);
@@ -70,6 +87,7 @@ export const useGameLoop = () => {
       const dt = (time - lastTimeRef.current) / 1000;
       lastTimeRef.current = time;
 
+      // Only run physics if Playing
       if (gameState === GameState.Playing) {
           const state = stateRef.current;
           
@@ -78,27 +96,40 @@ export const useGameLoop = () => {
           let gridModified = false;
 
           state.shooters.forEach(shooter => {
-               // Move
-               // Fixed: Removed arbitrary multipliers. Now uses RAIL_SPEED (cells/sec) * dt (seconds)
-               shooter.railPosition += RAIL_SPEED * dt; 
+               const oldPos = shooter.railPosition;
+               const moveDist = RAIL_SPEED * dt;
                
-               // Check loop
-               if (shooter.railPosition >= state.perimeter) {
-                   shooter.railPosition = shooter.railPosition % state.perimeter;
-               }
+               // Calculate logical crossing of cell centers
+               // Cell Center K is at position K + 0.5
+               // We check if we crossed any (K + 0.5) boundary in this step.
+               // We use floor(pos - 0.5) to identify which cell "center region" we are in.
+               // If it changes, we crossed a center.
+               
+               const idxStart = Math.floor(oldPos - 0.5);
+               const idxEnd = Math.floor((oldPos + moveDist) - 0.5);
+               
+               shooter.railPosition = (oldPos + moveDist) % state.perimeter;
 
-               // Fire
-               const canFire = (time / 1000) - shooter.lastFired > FIRE_RATE;
-               
-               if (shooter.ammo > 0 && canFire) {
-                   const { side, gridIndex } = calculateRailState(shooter.railPosition, state.perimeter, GRID_SIZE, GRID_SIZE);
+               // Iterate through all centers crossed (usually just 1, unless lag spike)
+               // Note: We use idxStart + 1 to idxEnd because we want the NEW region entered
+               for (let i = idxStart + 1; i <= idxEnd; i++) {
+                   if (shooter.ammo <= 0) break;
+
+                   // We need the effective grid coordinate logic.
+                   // The "Center" of cell index C is at C + 0.5
+                   // Logic index i corresponds to crossing the center of cell i.
+                   // We need to handle wrapping for the logical check if the number implies it,
+                   // but here calculateRailState handles the modulo internally.
+                   // We just pass the center position (i + 0.5) to get the correct side/index.
+                   
+                   // Center position of the cell we just crossed
+                   const checkPos = i + 0.5;
+                   const { side, gridIndex } = calculateRailState(checkPos, state.perimeter, GRID_SIZE, GRID_SIZE);
                    const target = findTargetPixel(state.grid, side, gridIndex);
 
                    if (target && target.color === shooter.color) {
-                       // HIT!
                        state.grid[target.row][target.col].active = false;
                        shooter.ammo--;
-                       shooter.lastFired = time / 1000;
                        state.score += 10;
                        gridModified = true;
                    }
@@ -118,10 +149,8 @@ export const useGameLoop = () => {
           }
 
           // Force Render
-          // Optimization: Only update React state if needed or every frame for smooth movement
           setShooters([...state.shooters]); 
           if (gridModified) {
-              // Create a shallow copy of the grid rows to trigger React re-render
               setGrid([...state.grid.map(row => [...row])]);
               setScore(state.score);
           }
@@ -138,28 +167,92 @@ export const useGameLoop = () => {
      }
   }, [gameTick]);
 
-  const handleSpawn = (id: string) => {
-      const s = stateRef.current.inventory.find(x => x.id === id);
-      if (s) {
-          stateRef.current.inventory = stateRef.current.inventory.filter(x => x.id !== id);
-          // Reset shooter state when spawning
+  // Spawn from a specific lane
+  const handleSpawn = (laneIndex: number) => {
+      const lane = stateRef.current.inventoryLanes[laneIndex];
+      if (lane && lane.length > 0) {
+          const s = lane[0];
+          const newLane = lane.slice(1);
+          stateRef.current.inventoryLanes[laneIndex] = newLane;
+          
           stateRef.current.shooters.push({ 
               ...s, 
               state: 'moving', 
-              railPosition: 0,
-              lastFired: 0 
+              railPosition: 0
           });
-          setInventory([...stateRef.current.inventory]);
+
+          setInventoryLanes([...stateRef.current.inventoryLanes]);
       }
+  };
+
+  // --- EDITOR FUNCTIONS ---
+
+  const enterEditor = () => {
+      setGameState(GameState.Editing);
+      setShooters([]);
+      setInventoryLanes([[],[],[],[]]);
+      setScore(0);
+      // We keep the current grid so the user can edit it
+  };
+
+  const clearGrid = () => {
+      const newGrid = createBlankGrid();
+      setGrid(newGrid);
+  };
+
+  const updatePixel = (r: number, c: number, color: ColorID, brushSize: number) => {
+      const newGrid = grid.map(row => row.map(pixel => ({ ...pixel })));
+      
+      // Apply brush size (simple square for now)
+      // If size is 1, just current pixel. If 2, 2x2.
+      for (let i = 0; i < brushSize; i++) {
+          for (let j = 0; j < brushSize; j++) {
+              const tr = r + i;
+              const tc = c + j;
+              if (tr >= 0 && tr < GRID_SIZE && tc >= 0 && tc < GRID_SIZE) {
+                  const isActive = color !== ColorID.None;
+                  newGrid[tr][tc] = {
+                      ...newGrid[tr][tc],
+                      color: color,
+                      active: isActive
+                  };
+              }
+          }
+      }
+      
+      setGrid(newGrid);
+  };
+
+  const playCustomLevel = () => {
+      const currentGrid = stateRef.current.grid; // Use ref for latest
+      
+      // 1. Generate solution for the edited grid
+      const solution = getSolution(currentGrid);
+      
+      // 2. Distribute to lanes
+      const lanes: Shooter[][] = [[], [], [], []];
+      solution.forEach((shooter, index) => {
+          lanes[index % 4].push(shooter);
+      });
+
+      setInventoryLanes(lanes);
+      setShooters([]);
+      setGameState(GameState.Playing);
+      lastTimeRef.current = 0;
   };
 
   return {
     grid,
     shooters,
-    inventory,
+    inventoryLanes,
     score,
     gameState,
     spawnShooter: handleSpawn,
-    setGameState
+    setGameState,
+    enterEditor,
+    updatePixel,
+    clearGrid,
+    playCustomLevel,
+    restartLevel: startNewLevel
   };
 };

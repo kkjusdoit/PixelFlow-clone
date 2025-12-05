@@ -40,7 +40,6 @@ export interface Shooter {
   // Position on the rail (0 to perimeter length)
   railPosition: number; 
   state: 'inventory' | 'moving' | 'returning';
-  lastFired: number; // Timestamp of last shot to limit fire rate
 }
 
 // Game Status
@@ -48,6 +47,7 @@ export enum GameState {
   Playing = 'PLAYING',
   Won = 'WON',
   Lost = 'LOST',
+  Editing = 'EDITING'
 }
 
 export interface LevelConfig {
@@ -59,4 +59,4 @@ export const GRID_SIZE = 11;
 export const RAIL_PADDING = 2; // Distance from grid to rail
 export const MAX_TRAYS = 5;
 export const RAIL_SPEED = 6.0; // Grid cells per second (Adjusted for smooth gameplay)
-export const FIRE_RATE = 0.15; // Seconds between shots
+// FIRE_RATE is removed as we now use spatial triggers

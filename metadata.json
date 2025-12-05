@@ -1,0 +1,5 @@
+{
+  "name": "Pixel Flow",
+  "description": "A puzzle game mixing Match-3 and Tower Defense mechanics where you clear a pixel art grid using moving shooters.",
+  "requestFramePermissions": []
+}
